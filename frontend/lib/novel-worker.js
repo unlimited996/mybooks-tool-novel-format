@@ -1,5 +1,5 @@
 (() => {
-  // backend/formatter_src/textUtils.js
+  // frontend/src/formatter/textUtils.js
   var normalizeNewlines = (text) => text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
   var splitTextIntoLines = (text, options = {}) => {
     if (!text) {
@@ -65,7 +65,7 @@
   };
   var escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  // backend/formatter_src/regex.js
+  // frontend/src/formatter/regex.js
   var punctuationEndRegex = /(?:[。？！…”"」\]】)）※]|\.{3,}|-{3,}|—{3,}|={3,}|＝{3,})$/;
   var specialLineStartRegex = /^(?:[【「\[“"◆※].*|-{3,}|—{3,}|={3,}|＝{3,}|第.*[章节卷])$/;
   var pureNumberRegex = /^\d+$/;
@@ -132,7 +132,7 @@
     return true;
   };
 
-  // backend/formatter_src/novelUtils.js
+  // frontend/src/formatter/novelUtils.js
   var isTitleLine = isChapterTitleLine;
   var chapterMarker = (s) => {
     const m = s.match(/第\s*[〇零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾佰仟萬\d]+\s*([章节卷集幕回部篇])/);

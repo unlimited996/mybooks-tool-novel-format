@@ -427,8 +427,10 @@
 <script>
 (function () {
   'use strict';
-  var API = '/api/novel_format';
   var DISPLAY_LIMIT = 50000;
+  var bridge = window.MyBooksToolBridge || {};
+  // 工具自身后端接口：/api/toolbox/tool/novel_format/<path>，返回已解析的 JSON
+  function api(path, options) { return bridge.fetch(path, options); }
   var i18n = window.MyBooksToolI18n.create();
   var t = function (k, p) { return i18n.t(k, p); };
   var state = { page: 1, num: 50, total: 0, search: '', items: [], selected: new Map(), running: false };
@@ -461,9 +463,8 @@
     q.set('page', state.page); q.set('num', state.num); q.set('sort', 'id'); q.set('desc', 'true');
     if (state.search) q.set('search', state.search);
     $('tbody').innerHTML = '<tr><td colspan="7" class="empty">' + esc(t('list.loading')) + '</td></tr>';
-    fetch('/api/admin/book/list?' + q.toString(), { credentials: 'include' })
-      .then(function (r) { return r.json(); })
-      .then(function (rsp) { if (rsp.err !== 'ok') throw new Error(rsp.msg || 'error'); state.items = rsp.items || []; state.total = rsp.total || 0; render(); })
+    api('books?' + q.toString())
+      .then(function (rsp) { if (rsp.err !== 'ok') throw new Error(rsp.msg || 'error'); var data = rsp.data || {}; state.items = data.items || []; state.total = data.total || 0; render(); })
       .catch(function (err) { $('tbody').innerHTML = '<tr><td colspan="7" class="empty">' + esc(t('err.load', { msg: err.message || err })) + '</td></tr>'; });
   }
 
@@ -656,9 +657,8 @@
     var mode = document.querySelector('#d-convert .seg-btn.active').getAttribute('data-val');
     var text = dlg.source;
     var pre = mode === 'none' ? Promise.resolve(text) :
-      fetch(API + '/convert', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+      api('convert', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: text, direction: mode }) })
-      .then(function (r) { return r.json(); })
       .then(function (rsp) { if (rsp.err !== 'ok') throw new Error(rsp.msg || t('err.convert', { msg: '' })); return rsp.data.text; });
     return pre.then(function (x) { return runWorker('format', x, options()); })
       .then(function (out) {
@@ -682,20 +682,24 @@
     var book = currentBook(); if (!book || !dlg.result) return Promise.resolve(false);
     $('d-cover').disabled = true;
     var author = $('d-author-on').checked ? (dlg.author || '') : '';
-    return fetch(API + '/' + book.id + '/save', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: dlg.result, encoding: dlg.encoding, author: author }) })
-      .then(function (r) { return r.json(); })
+    var tagEnabled = $('d-tag').checked;
+    return api('save', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        book_id: book.id, content: dlg.result, encoding: dlg.encoding, author: author,
+        // 读取时的字节数 + 字符数：后端据此拒绝「文件已变化」或「结果被截断」的覆盖
+        expected_size: dlg.size || 0, source_chars: (dlg.source || '').length, tag: tagEnabled
+      }) })
       .then(function (rsp) {
         if (rsp.err !== 'ok') throw new Error(rsp.msg || 'error');
         if (dlg.covered.indexOf(book.id) === -1) dlg.covered.push(book.id);
         dlg.skipped = dlg.skipped.filter(function (x) { return x.id !== book.id; });
         // 服务端对「本来就有精校标签」的书返回 tagged=false（它只在新增标签时置 true），
         // 这里再确认一次书籍自身的标签，避免把已有标签误报成「未写入」
-        if (rsp.data && rsp.data.tagged === false &&
-            (book.tags || []).indexOf('精校') === -1) {
+        var hasTag = (book.tags || []).indexOf('精校') !== -1;
+        if (tagEnabled && rsp.data && rsp.data.tagged === false && !hasTag) {
           log(t('log.tagMissing'));
         }
-        if (rsp.data && rsp.data.tagged !== false && (book.tags || []).indexOf('精校') === -1) {
+        if (tagEnabled && rsp.data && rsp.data.tagged !== false && !hasTag) {
           book.tags = (book.tags || []).concat(['精校']);
         }
         log(t('log.covered', { title: book.title || '' }));
@@ -760,105 +764,18 @@
     log(t('log.exported', { name: name }));
   }
 
-  // 旧版服务端会把 GBK 的 TXT 按 UTF-8 解码成乱码；这里改为下载原始字节，
-  // 在浏览器里按 BOM / UTF-8 严格校验 / 常用字命中率判断编码后解码。
-  var COMMON_HANZI = '的一是了我不人在他有这个上们来到时大地为子中你说生国年着就那和要她出也得里后自以会家可下而过天去能对小多然于心学么之都好看起发当没成只如事把还用第样道想作种开美总从无情己面最女但现前些所同日手又行意动方期它头经长儿回位分爱老因很给名法间斯知世什两次使身者被高已亲其进此话常与活正感' +
-    '的一是了我不人在他有這個上們來到時大地為子中你說生國年著就那和要她出也得裡後自以會家可下而過天去能對小多然於心學麼之都好看起發當沒成只如事把還用第樣道想作種開美總從無情己面最女但現前些所同日手又行意動方期它頭經長兒回位分愛老因很給名法間斯知世什兩次使身者被高已親其進此話常與活正感';
-
-  function scoreCandidates(text) {
-    // 按出现次数统计，而不是"是否出现"：短句反复出现时只看存在性会误判成乱码
-    var hits = (text.match(new RegExp('[' + COMMON_HANZI + ']', 'g')) || []).length;
-    var bad = (text.match(/\uFFFD/g) || []).length;
-    return hits - bad * 5;
-  }
-
-  function decodeNovelBytes(buffer) {
-    var u8 = new Uint8Array(buffer);
-    if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) {
-      return { text: new TextDecoder('utf-8').decode(u8.subarray(3)), encoding: 'utf-8' };
-    }
-    if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xFE) {
-      return { text: new TextDecoder('utf-16le').decode(u8.subarray(2)), encoding: 'utf-16' };
-    }
-    if (u8.length >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) {
-      return { text: new TextDecoder('utf-16be').decode(u8.subarray(2)), encoding: 'utf-16' };
-    }
-    var sample = u8.subarray(0, Math.min(65536, u8.length));
-    try {
-      new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: true });
-      return { text: new TextDecoder('utf-8').decode(u8), encoding: 'utf-8' };
-    } catch (e) { /* 样本里有非法字节，下面再看是不是「几乎全是 UTF-8」 */ }
-
-    // 少量坏字节（截断、混入个别非 UTF-8 片段）不应该让整本改按 GBK 解码：
-    // 只要坏字节占比很低，仍按 UTF-8 解，坏字节会变成 U+FFFD，别的部分保持可读。
-    var utf8Sample = new TextDecoder('utf-8').decode(sample, { stream: true });
-    var badChars = (utf8Sample.match(/\uFFFD/g) || []).length;
-    if (utf8Sample.length > 0 && badChars / utf8Sample.length < 0.005) {
-      return { text: new TextDecoder('utf-8').decode(u8), encoding: 'utf-8' };
-    }
-
-    var candidates = ['gb18030', 'big5'];
-    var best = null;
-    candidates.forEach(function (enc) {
-      var sampleText;
-      try { sampleText = new TextDecoder(enc, { fatal: false }).decode(sample); }
-      catch (e) { return; }
-      var score = scoreCandidates(sampleText);
-      if (!best || score > best.score) best = { enc: enc, score: score };
-    });
-    var chosen = best ? best.enc : 'gb18030';
-    // 常用字命中数太低说明两种候选都解不出像样中文：宁可报错，也不要把乱码写回书库
-    if (!best || best.score < 20) {
-      var err = new Error('decode failed');
-      err.code = 'decode_failed';
-      throw err;
-    }
-    return { text: new TextDecoder(chosen).decode(u8), encoding: chosen };
-  }
-
-  function looksGarbled(text) {
-    var sample = String(text || '').slice(0, 20000);
-    if (sample.length < 200) return false;
-    var cjk = (sample.match(/[\u4e00-\u9fff]/g) || []).length;
-    if (cjk < 20) return false;   // 基本没有中文，无法判断，按正常处理
-    var bad = (sample.match(/\uFFFD/g) || []).length;
-    if (bad / sample.length > 0.002) return true;   // 0.2% 以上是替换字符
-    return scoreCandidates(sample) < 20;            // 中文里常用字命中极低 = 乱码
-  }
-
-  function fetchRawSource(book) {
-    return fetch('/api/book/' + book.id + '.TXT', { credentials: 'include' })
-      .then(function (r) {
-        if (!r.ok) throw new Error('download-failed');
-        var len = Number(r.headers.get('Content-Length') || 0);
-        if (len > 100 * 1024 * 1024) { var e = new Error('too large'); e.code = 'too_large'; throw e; }
-        return r.arrayBuffer();
-      })
-      .then(function (buf) {
-        var decoded = decodeNovelBytes(buf);
-        decoded.size = buf.byteLength;
-        return decoded;
-      });
-  }
-
+  // 编码识别与解码都在工具后端完成（BOM / UTF-8 / GB18030 / Big5 候选评分），
+  // 这里只负责把服务端返回的 JSON 交给排版流程。
   function fetchSourceText(book) {
-    // 正常路径：走服务端解码好的 JSON；只有识别到乱码（或读取失败）才去下载原始字节
-    return fetch(API + '/' + book.id + '/text', { credentials: 'include' })
-      .then(function (r) { return r.json(); })
+    return api('text?book_id=' + encodeURIComponent(book.id))
       .then(function (rsp) {
-        if (rsp.err !== 'ok') throw new Error(rsp.msg || 'error');
-        var data = rsp.data || {};
-        var text = data.content || '';
-        if (looksGarbled(text)) {
-          var err = new Error('garbled');
-          err.code = 'garbled';
+        if (rsp.err !== 'ok') {
+          var err = new Error(rsp.msg || 'error');
+          err.code = rsp.err;
           throw err;
         }
-        return { text: text, encoding: data.encoding || 'utf-8', size: data.size || 0 };
-      })
-      .catch(function (err) {
-        if (err && err.code === 'decode_failed') throw err;
-        return fetchRawSource(book);
+        var data = rsp.data || {};
+        return { text: data.content || '', encoding: data.encoding || 'utf-8', size: data.size || 0 };
       });
   }
 
