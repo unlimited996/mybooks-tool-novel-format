@@ -2,7 +2,7 @@
   "tool_id": "novel_format",
   "name": "小说排版整理",
   "description": "批量把 TXT 小说按段落/章节重新排版并覆盖回书库，可选追加「精校」标签",
-  "revision": "0.3.0",
+  "revision": "0.3.1",
   "author": "unlimited996",
   "publish_date": "2026-11-26",
   "core_api_version": "1.5.0",

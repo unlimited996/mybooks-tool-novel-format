@@ -559,8 +559,8 @@ ${restContent}`;
   };
 
   // frontend/src/formatter/authorDetect.js
-  var MAX_SCAN_CHARS = 4e3;
-  var MAX_SCAN_LINES = 40;
+  var MAX_SCAN_CHARS = 8e3;
+  var MAX_SCAN_LINES = 60;
   var MAX_AUTHOR_LEN = 24;
   var CN_NUM = "[0-9\uFF10-\uFF19\u3007\u96F6\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D\u4E03\u516B\u4E5D\u5341\u767E\u5343\u4E07\u4E24\u58F9\u8D30\u53C1\u8086\u4F0D\u9646\u67D2\u634C\u7396\u62FE\u4F70\u4EDF\u842C]+";
   var CHAPTER_LINE = new RegExp(
@@ -568,12 +568,18 @@ ${restContent}`;
   );
   var BAD_AUTHOR_CHARS = /[。，,！？!?；;、<>《》【】()（）"“”'‘’：:/\\|]/;
   var BAD_AUTHOR_WORDS = /(?:第.{1,6}[章节回卷]|小说|全集|下载|网址|http|www|\.com|\.cn|佚名网|未知)/i;
+  var BAD_AUTHOR_PREFIX = /^(?:的话|简介|作品|专栏|声明|寄语|公告|的话说|有话说|的|了|是|在|有)/;
   var AUTHOR_PATTERNS = [
     // 作者：XXX / 著者:XXX / 作家：XXX
-    /^\s*(?:作\s*者|著\s*者|作\s*家)\s*[:：]\s*(.+?)\s*$/,
+    // 允许前面有书名或装饰符，例如「书名 作者：某某」「《书名》作者：某某」
+    /(?:^|[^A-Za-z0-9])(?:原?作\s*者|著\s*者|作\s*家)\s*[:：]\s*(.+?)\s*$/,
+    // 作者 张三 / 著者 阿西莫夫（没有冒号的写法）
+    /(?:^|[^A-Za-z0-9])(?:作\s*者|著\s*者)\s+(.{1,20})\s*$/,
     // XXX 著 / XXX 编著 / XXX 原著（整行只有“名字 + 著作方式”）
     /^\s*(.{1,24}?)\s*(?:编著|原著|著)\s*$/
   ];
+  var TRAIL_MARKER = /(?:字数|修改作者|更新时间|更新至|更新时间|更新|文案|内容简介|编辑推荐|推荐语|简介|出版|来源|转载|声明|发帖|发表于|正文|本章|章节|书名|作者|链接|https?:|www\.|于?\s*\d{4}\s*[年\-/]\s*\d{1,2})/;
+  var TRAIL_BRACKET = /[（(【\[]\s*(?:第\s*[0-9一二三四五六七八九十百零]+\s*[章节回卷]?|[0-9一二三四五六七八九十百零]{1,4}|全|完)\s*[）)】\]]/;
   var WRAPPER_CHARS = /* @__PURE__ */ new Set(["\u3010", "[", "\uFF08", "(", "\u300A", "\u201C", '"', "'", "\u3011", "]", "\uFF09", ")", "\u300B", "\u201D", "\u2019"]);
   var stripWrappers = (input) => {
     let start = 0;
@@ -582,12 +588,29 @@ ${restContent}`;
     while (end > start && WRAPPER_CHARS.has(input[end - 1])) end -= 1;
     return input.slice(start, end);
   };
-  var cleanCandidate = (raw) => stripWrappers(String(raw || "")).replace(/\s*(?:编著|原著|著)\s*$/, "").replace(/^作\s*者\s*[:：]\s*/, "").trim();
+  var cleanCandidate = (raw, title = "") => {
+    let name = String(raw || "").trim();
+    name = name.replace(/[（(][^）)]{0,24}[）)]\s*$/, "").trim();
+    name = stripWrappers(name).replace(/^作\s*者\s*[:：]\s*/, "").replace(/\s*(?:编著|原著|著)\s*$/, "").trim();
+    const cut = name.search(TRAIL_MARKER);
+    if (cut > 0) name = name.slice(0, cut).trim();
+    const t = String(title || "").replace(/\s+/g, "");
+    if (t && t.length >= 2) {
+      const flat = name.replace(/\s+/g, "");
+      const at = flat.indexOf(t);
+      if (at > 0) name = flat.slice(0, at);
+    }
+    const bracket = name.search(TRAIL_BRACKET);
+    if (bracket > 0) name = name.slice(0, bracket).trim();
+    name = name.replace(/[＊*\u3000\u200b-\u200d]/g, "").trim();
+    return stripWrappers(name).trim();
+  };
   var isPlausibleAuthor = (name, title) => {
     if (!name) return false;
     if (name.length < 1 || name.length > MAX_AUTHOR_LEN) return false;
     if (BAD_AUTHOR_CHARS.test(name)) return false;
     if (BAD_AUTHOR_WORDS.test(name)) return false;
+    if (BAD_AUTHOR_PREFIX.test(name)) return false;
     if (new RegExp(`^\u7B2C\\s*${CN_NUM}\\s*[\u7AE0\u8282\u56DE\u5377\u96C6\u90E8\u7BC7\u5E55]`).test(name)) return false;
     if (!/[A-Za-z\u4e00-\u9fff]/.test(name)) return false;
     const t = String(title || "").trim();
@@ -608,15 +631,13 @@ ${restContent}`;
     for (const line of lines) {
       const value = line.trim();
       if (!value) continue;
-      if (CHAPTER_LINE.test(value)) break;
       scanned += 1;
       if (scanned > MAX_SCAN_LINES) break;
-      if (value.length > 60) continue;
-      const cleanedLine = stripWrappers(value);
+      if (value.length > 60 && !/(?:作\s*者|著\s*者|作\s*家)\s*[:：]/.test(value)) continue;
       for (const pattern of AUTHOR_PATTERNS) {
-        const matched = cleanedLine.match(pattern);
+        const matched = value.match(pattern);
         if (!matched) continue;
-        const candidate = cleanCandidate(matched[1]);
+        const candidate = cleanCandidate(matched[1], title);
         if (isPlausibleAuthor(candidate, title)) return candidate;
       }
     }

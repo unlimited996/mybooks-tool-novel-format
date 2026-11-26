@@ -365,7 +365,7 @@
               <div class="field-row">
                 <label data-i18n="opt.autoAuthor">自动识别作者</label>
                 <div style="display:flex;align-items:center;gap:10px;">
-                  <input id="d-author" type="text" readonly data-i18n-attr="placeholder:opt.authorUnknown" placeholder="未识别到作者" />
+                  <input id="d-author" type="text" maxlength="40" data-i18n-attr="placeholder:opt.authorUnknown" placeholder="未识别到作者" />
                   <label class="switch" data-i18n-attr="title:opt.authorWrite"><input id="d-author-on" type="checkbox"><span></span></label>
                 </div>
               </div>
@@ -509,7 +509,7 @@
     $('start-btn').disabled = state.running || state.selected.size === 0;
   }
 
-  var dlg = { books: [], index: 0, source: '', result: '', encoding: 'utf-8', size: 0, covered: [], skipped: [], author: '', logs: [] };
+  var dlg = { books: [], index: 0, source: '', result: '', encoding: 'utf-8', size: 0, covered: [], skipped: [], author: '', authorEdits: {}, logs: [] };
   function currentBook() { return dlg.books[dlg.index]; }
   function skipReasonText(item) {
     var map = {
@@ -628,7 +628,11 @@
         $('d-src-size').textContent = t('stats.kb', { size: Math.round(dlg.size / 1024) });
         $('d-src-stats').textContent = t('stats.chars', { count: dlg.source.length.toLocaleString() }) +
           (dlg.source.length > DISPLAY_LIMIT ? ' ' + t('stats.previewLimit') : '');
-        try { dlg.author = window.NovelFmt.detectAuthor(dlg.source, book.title) || ''; } catch (e) { dlg.author = ''; }
+        if (dlg.authorEdits[book.id] !== undefined) {
+          dlg.author = dlg.authorEdits[book.id];
+        } else {
+          try { dlg.author = window.NovelFmt.detectAuthor(dlg.source, book.title) || ''; } catch (e) { dlg.author = ''; }
+        }
         $('d-author').value = dlg.author;
         if ($('d-auto').checked) process();
       })
@@ -681,7 +685,7 @@
   function cover(auto) {
     var book = currentBook(); if (!book || !dlg.result) return Promise.resolve(false);
     $('d-cover').disabled = true;
-    var author = $('d-author-on').checked ? (dlg.author || '') : '';
+    var author = $('d-author-on').checked ? ($('d-author').value || '').trim() : '';
     var tagEnabled = $('d-tag').checked;
     return api('save', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -944,6 +948,11 @@
   $('d-finish').addEventListener('click', function () { if (dlg.result) return cover(false).then(function (ok) { if (ok) advance(); }); advance(); });
   $('d-copy').addEventListener('click', copyResult);
   $('d-export').addEventListener('click', exportFile);
+  $('d-author').addEventListener('input', function () {
+    var b = currentBook();
+    dlg.author = this.value.trim();
+    if (b) dlg.authorEdits[b.id] = dlg.author;
+  });
   $('d-filter').addEventListener('input', function () { $('d-filter-len-row').style.display = this.value ? 'flex' : 'none'; });
   $('d-smart').addEventListener('change', syncIndentRow);
   ['change', 'input'].forEach(function (ev) {
